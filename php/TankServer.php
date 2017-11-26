@@ -45,8 +45,12 @@ class PlayerServerHandler implements PlayerServerIf
     private $flagPos = null;
     private $AStarMap = null;
     private $arrTankStates = null;
+    private $arrTankStatesCopy = null;
     private $arrEnemyTankStates = null;
     private $myFirstTank = array();
+
+    //子弹状态
+    private $arrShellStates = null;
 
     //以下为第一张地图和第二张地图设置固定站点
     private $arrOneMap;
@@ -147,15 +151,15 @@ class PlayerServerHandler implements PlayerServerIf
         $this->arrTargetPosition[2] = array(
             array('x' => 14, 'y' => 16),
             array('x' => 13, 'y' => 15),
-            array('x' => 16, 'y' => 14),
-            array('x' => 15, 'y' => 13),
+            array('x' => 24, 'y' => 13),
+            array('x' => 18, 'y' => 15),
         );
         //右下角出生位
         $this->arrTargetPosition[3] = array(
-            array('x' => 14, 'y' => 14),
             array('x' => 15, 'y' => 13),
-            array('x' => 16, 'y' => 16),
-            array('x' => 17, 'y' => 15),
+            array('x' => 10, 'y' => 16),
+            array('x' => 16, 'y' => 14),
+            array('x' => 12, 'y' => 15),
         );
 
     }
@@ -206,16 +210,56 @@ class PlayerServerHandler implements PlayerServerIf
             if ($this->compareMap($this->arrTwoMap)) {
                 //命中第二张地图,只留下第二张地图的占位信息
                 //echo "Map Two OK !\n";
+
                 $this->MapId = 2;
                 $this->arrTargetPosition[0] = $this->arrTargetPosition[2];
                 $this->arrTargetPosition[1] = $this->arrTargetPosition[3];
                 unset($this->arrTargetPosition[2]);
                 unset($this->arrTargetPosition[3]);
+
             } else {
                 //命中后三张地图，默认处理
-                echo "defalut Map OK !\n";
+                //echo "defalut Map OK !\n";
                 //后续加上
                 unset($this->arrTargetPosition);
+                $this->getDefaultPos();
+            }
+        }
+    }
+
+    private function getDefaultPos()
+    {
+        $CenterPosX = floor(count($this->AStarMap) / 2);
+        $CenterPosY = floor(count($this->AStarMap[0]) / 2);
+        $intNum = 0;
+        $boolRes = false;
+        for ($i = $CenterPosX - 4; $i < $CenterPosX + 4; $i++) {
+            if($boolRes) {
+                break;
+            }
+            for ($j = $CenterPosY - 4; $j < $CenterPosY + 4; $j++) {
+                if (1 != $this->AStarMap [$i][$j]) {
+                    if (abs($j - $CenterPosY) <= 1 || abs($i - $CenterPosX) <= 1) {
+                        //只要外面的大圈坐标，不要内圈的
+                        continue;
+                    }
+
+                    $this->arrTargetPosition[0][] = array('x' => $i, 'y' => $j);
+                    $intNum++;
+                }
+
+                if ($this->intTankNum == $intNum) {
+                    $this->arrTargetPosition[1] = $this->arrTargetPosition[0];
+                    $boolRes = true;
+                    break;
+                }
+            }
+        }
+
+        if ($intNum < $this->intTankNum) {
+            for ($i = $intNum; $i < $this->intTankNum; $i++) {
+                $this->arrTargetPosition[0][$i] = array('x' => $CenterPosX, 'y' => $CenterPosY);
+                $this->arrTargetPosition[1] = $this->arrTargetPosition[0];
             }
         }
     }
@@ -241,7 +285,6 @@ class PlayerServerHandler implements PlayerServerIf
     {
         $this->arrTanks = $tanks;
         $this->intTankNum = count($tanks);
-        //echo json_encode($tanks) . "\n";
     }
 
     /**
@@ -253,6 +296,7 @@ class PlayerServerHandler implements PlayerServerIf
     public function latestState(GameState $state)
     {
         $arrState = json_decode(json_encode($state), true);
+        //echo json_encode($arrState) . "&&&&&&&&&&&&\n";
         $this->arrTankStates = array();
         $this->arrEnemyTankStates = array();
         foreach ($arrState['tanks'] as $arrTank) {
@@ -269,7 +313,7 @@ class PlayerServerHandler implements PlayerServerIf
         }
         if (isset($arrState['flagPos'])) {
             $this->flagPos = $arrState['flagPos'];
-        }else{
+        } else {
             $this->flagPos = array();
         }
 
@@ -294,6 +338,42 @@ class PlayerServerHandler implements PlayerServerIf
                 $this->arrTank2Pos[$tankId] = $this->arrTargetPosition[$intBirthPlace][$key];
             }
         }
+
+        //记下子弹的状态
+        if (isset($arrState['shells']) && !empty($arrState['shells'])) {
+            $this->arrShellStates = $arrState['shells'];
+        } else {
+            $this->arrShellStates = array();
+        }
+
+        //留个备份
+        $this->arrTankStatesCopy = $this->arrTankStates;
+    }
+
+    //选一个tank去抢旗子
+    public function getCandidate()
+    {
+        foreach ($this->arrTankStates as $TankId => $arrTankStates) {
+            if ($arrTankStates['pos']['y'] == $this->flagPos['y'] || $arrTankStates['pos']['x'] == $this->flagPos['x']) {
+                return $arrTankStates;
+            }
+        }
+
+        //这里的话可能有坦克已经阵亡了
+        //在选一个离旗子最近的tank去抢
+        $MinDistance = PHP_INT_MAX;
+        $CandidateId = -1;
+        foreach ($this->arrTankStates as $TankId => $arrTankStates) {
+            $TmpDistance = abs($arrTankStates['pos']['y'] - $this->flagPos['y']) + abs($arrTankStates['pos']['x'] - $this->flagPos['x']);
+            if ($TmpDistance < $MinDistance) {
+                $CandidateId = $TankId;
+            }
+        }
+
+        if (-1 !== $CandidateId) {
+            return $this->arrTankStates[$CandidateId];
+        }
+        return false;
     }
 
     /**
@@ -302,8 +382,7 @@ class PlayerServerHandler implements PlayerServerIf
      *
      * @return \tank\player\Order[]
      */
-    public function getNewOrders()
-    {
+    public function getNewOrders() {
         $arrOrders = array();
         $arrOrderList = array();
 
@@ -315,7 +394,7 @@ class PlayerServerHandler implements PlayerServerIf
                 $arrOrderTmp['tankId'] = $TankId;
                 $arrOrderTmp['order'] = 'fire';
                 $arrOrderTmp['dir'] = $intDir;
-                echo "fire[1]  " . json_encode($arrOrderTmp) . "\n";
+                //echo "fire[1]  " . json_encode($arrOrderTmp) . "\n";
                 $objOrder = new Order($arrOrderTmp);
                 $arrOrderList[] = $objOrder;
                 //该坦克会直接开火，不在接受新的指令
@@ -323,46 +402,54 @@ class PlayerServerHandler implements PlayerServerIf
             }
         }
 
+        //第二优先级规避子弹
+
         if (!empty($this->flagPos)) {
             //出现旗子了，派一个坦克去抢
             $objEndNode = new myNode($this->flagPos['x'], $this->flagPos['y']);
-            if ($this->MapId == 1) {
-                foreach ($this->arrTankStates as $TankId => $arrTankStates) {
-                    if ($arrTankStates['pos']['y'] == $this->flagPos['y']) {
-                        //开始寻路
-                        $arrOrderTmp = array();
-                        $objStartNode = new myNode($arrTankStates['pos']['x'], $arrTankStates['pos']['y']);
-                        $ObjAStar = new AStar($this->AStarMap);
-                        $arrNextNode = $ObjAStar->aStarSearch($objStartNode, $objEndNode);
-                        $intDir = $this->getDirection($arrNextNode, $objStartNode);
-                        if ($intDir == $arrTankStates['dir']) {
-                            //不需要转向
-                            //这里需要判断一下下一步会不会冲突（两个坦克同时进入一个格子会都动不了）
-                            $boolRes = $this->checkConflict($arrOrderList, $arrNextNode);
-                            if (!$boolRes) {
-                                $arrOrderTmp['order'] = 'move';
-                                $arrOrderTmp['tankId'] = $TankId;
-                            }
-                        } else {
-                            //需要先转向
-                            $arrOrderTmp['order'] = 'turnTo';
-                            $arrOrderTmp['tankId'] = $TankId;
-                        }
+            $arrTankStates = $this->getCandidate();
 
-                        if (!empty($arrOrderTmp)) {
-                            $arrOrderTmp['dir'] = $intDir;
-                            $objOrder = new Order($arrOrderTmp);
-                            $arrOrderList[] = $objOrder;
-                        }
+            //echo  json_encode($arrTankStates) ."CCCCCCCCCCCCC\n";
+            if (!empty($arrTankStates)) {
+                //开始寻路
+                $TankId = $arrTankStates['id'];
+                $arrOrderTmp = array();
+                $objStartNode = new myNode($arrTankStates['pos']['x'], $arrTankStates['pos']['y']);
+                $ObjAStar = new AStar($this->AStarMap);
+                $arrNextNode = $ObjAStar->aStarSearch($objStartNode, $objEndNode);
+                $intDir = $this->getDirection($arrNextNode, $objStartNode);
+                if ($intDir == $arrTankStates['dir']) {
+                    //不需要转向
+                    //这里需要判断一下下一步会不会冲突（两个坦克同时进入一个格子会都动不了）
+                    $boolRes = $this->checkConflict($arrOrderList, $arrNextNode);
+                    if (!$boolRes) {
+                        $arrOrderTmp['order'] = 'move';
+                        $arrOrderTmp['tankId'] = $TankId;
                     }
-                    unset($this->arrTankStates[$TankId]);
-                    break;
+                } else {
+                    //需要先转向
+                    $arrOrderTmp['order'] = 'turnTo';
+                    $arrOrderTmp['tankId'] = $TankId;
                 }
-            }else{
 
+                //如果下一步要移动，需要检测一下是否安全
+                if('move' == $arrOrderTmp['order']) {
+                    if($this->CheckDangerious($arrNextNode)) {
+                        //走下一步有风险
+                       // echo "[1]下一步有风险\n";
+                        unset($arrOrderTmp);
+                    }
+                }
+
+
+                if (!empty($arrOrderTmp)) {
+                    $arrOrderTmp['dir'] = $intDir;
+                    $objOrder = new Order($arrOrderTmp);
+                    $arrOrderList[] = $objOrder;
+                }
+                unset($this->arrTankStates[$TankId]);
             }
         }
-
 
         //没有旗子，去目标位置蹲守
         //echo "没有旗子，去目标位置蹲守\n";
@@ -372,33 +459,40 @@ class PlayerServerHandler implements PlayerServerIf
             $ObjAStar = new AStar($this->AStarMap);
             //旗子未出现，先去初始占位
             $objEndNode = new myNode($this->arrTank2Pos[$TankId]['x'], $this->arrTank2Pos[$TankId]['y']);
-            echo 'start:' . $arrTankStates['pos']['x'] . ',' . $arrTankStates['pos']['y'] . "\n";
-            echo 'end:' . $this->arrTank2Pos[$TankId]['x'] . ',' . $this->arrTank2Pos[$TankId]['y'] . "\n";
+            //echo 'start:' . $arrTankStates['pos']['x'] . ',' . $arrTankStates['pos']['y'] . "\n";
+            //echo 'end:' . $this->arrTank2Pos[$TankId]['x'] . ',' . $this->arrTank2Pos[$TankId]['y'] . "\n";
             if ($objStartNode->getIntX() == $objEndNode->getIntX() && $objStartNode->getIntY() == $objEndNode->getIntY()) {
                 //已经到了终点
-
-                if (1 == $this->MapId && $objStartNode->getIntX() < count($this->AStarMap)/2) {
+                //左右开火
+                if($objStartNode->getIntX() == count($this->AStarMap) / 2) {
+                    if($objStartNode->getIntY() < count($this->AStarMap[0]) / 2) {
+                        $arrOrderTmp['dir'] = 4;
+                    }else{
+                        $arrOrderTmp['dir'] = 3;
+                    }
+                }
+                //上下开火
+                if ($objStartNode->getIntX() < count($this->AStarMap) / 2) {
                     $arrOrderTmp['dir'] = 2;
-                }else{
+                } else {
                     $arrOrderTmp['dir'] = 1;
                 }
-
-                $Ret = $this->getFristWall($arrTankStates['pos'] , $arrOrderTmp['dir']);
-                if(!$this->CheckWall($arrTankStates['pos'] ,$Ret)) {
+                //判断是否有自己人
+                $Ret = $this->getFristWall($arrTankStates['pos'], $arrOrderTmp['dir']);
+                if (!$this->CheckWall($arrTankStates['pos'], $Ret)) {
                     continue;
-                }else{
+                } else {
                     $arrOrderTmp['tankId'] = $TankId;
                     $arrOrderTmp['order'] = 'fire';
-                    echo "fire[2]  " . json_encode($arrOrderTmp) . "\n";
+                    //echo "fire[2]  " . json_encode($arrOrderTmp) . "\n";
                     $objOrder = new Order($arrOrderTmp);
                     $arrOrderList[] = $objOrder;
                     continue;
                 }
             }
+
             $arrNextNode = $ObjAStar->aStarSearch($objStartNode, $objEndNode);
-            //echo $this->AStarMap[$this->arrTank2Pos[$TankId]['x']][$this->arrTank2Pos[$TankId]['y']] . "\n";;
-            //var_dump($arrNextNode);
-            echo "next:" . $arrNextNode->getIntX() . ',' . $arrNextNode->getIntY() . "-----------------\n";
+            //echo "next:" . $arrNextNode->getIntX() . ',' . $arrNextNode->getIntY() . "-----------------\n";
             $intDir = $this->getDirection($arrNextNode, $objStartNode);
             if ($intDir == $arrTankStates['dir']) {
                 //不需要转向
@@ -414,14 +508,71 @@ class PlayerServerHandler implements PlayerServerIf
                 $arrOrderTmp['tankId'] = $TankId;
             }
 
+            //如果下一步要移动，需要检测一下是否安全
+            if('move' == $arrOrderTmp['order']) {
+                if($this->CheckDangerious($arrNextNode)) {
+                    //走下一步有风险
+                   // echo "[2]下一步有风险\n";
+                  //  echo json_encode($this->arrShellStates) . "BBBBBBBBB";
+                   // echo $arrNextNode->getIntX().','.$arrNextNode->getIntY() . "BBBBBBBBB";
+                    unset($arrOrderTmp);
+                }
+            }
+            //else{
+            //    echo "[2]无风险，OK\n";
+            //}
+
             if (!empty($arrOrderTmp)) {
                 $arrOrderTmp['dir'] = $intDir;
-                echo json_encode($arrOrderTmp) . "\n";
+            //    echo json_encode($arrOrderTmp) . "\n";
                 $objOrder = new Order($arrOrderTmp);
                 $arrOrderList[] = $objOrder;
             }
         }
         return $arrOrderList;
+    }
+
+
+    //检测下一步是否安全
+    private function  CheckDangerious(myNode $arrNextNode){
+        //判断子弹的飞行路线
+        foreach($this->arrShellStates as $Shell ) {
+            //下一步与子弹同列
+            if($Shell['pos']['y'] == $arrNextNode->getIntY() ) {
+                if(1 == $Shell['dir'] && $Shell['pos']['x'] >= $arrNextNode->getIntX()) {
+                    //子弹向上飞行
+                    if($this->CheckWall($Shell['pos'] , array('x'=>$arrNextNode->getIntX(),'y'=>$arrNextNode->getIntY()))){
+                       return true;
+                    }
+                }
+
+                if(2 == $Shell['dir'] && $Shell['pos']['x'] <= $arrNextNode->getIntX()) {
+                    //子弹向下飞行
+                    if($this->CheckWall($Shell['pos'] , array('x'=>$arrNextNode->getIntX(),'y'=>$arrNextNode->getIntY()))){
+                        return true;
+                    }
+                }
+            }
+
+            //下一步与子弹同排
+            if($Shell['pos']['x'] == $arrNextNode->getIntX() ) {
+                if(3 == $Shell['dir'] && $Shell['pos']['y'] >= $arrNextNode->getIntY()) {
+                    //子弹向左飞行
+                    if($this->CheckWall($Shell['pos'] , array('x'=>$arrNextNode->getIntX(),'y'=>$arrNextNode->getIntY()))){
+                        return true;
+                    }
+                }
+
+                if(4 == $Shell['dir'] && $Shell['pos']['y'] <= $arrNextNode->getIntY()) {
+                    //子弹向下飞行
+                    if($this->CheckWall($Shell['pos'] , array('x'=>$arrNextNode->getIntX(),'y'=>$arrNextNode->getIntY()))){
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     //根据当前位置和下一步位置，给出下一步的方向
@@ -455,7 +606,7 @@ class PlayerServerHandler implements PlayerServerIf
                 //$tankId = $arrOrder->getTankId();
                 //$tankStates = $this->arrTankStates[$tankId];
 
-                foreach ($this->arrTankStates as $arrTankStates) {
+                foreach ($this->arrTankStatesCopy as $arrTankStates) {
                     if ($arrOrder->getTankId() == $arrTankStates['id']) {
                         $NodeNextStep = '';
                         switch ($arrOrder->getDirection()) {
@@ -499,8 +650,6 @@ class PlayerServerHandler implements PlayerServerIf
     public function fire($arrMyState)
     {
         $arrEnemyTankStates = $this->arrEnemyTankStates;
-        //echo json_encode($arrEnemyTankStates) . "\n";
-        //echo json_encode($arrMyState) . "\n";
         foreach ($arrEnemyTankStates as $arrEnemyTankState) {
             if ($arrMyState['hp'] <= 0 || $arrEnemyTankState['hp'] <= 0 || empty($arrMyState) || empty($arrEnemyTankState)) {
                 return 0;
@@ -519,11 +668,9 @@ class PlayerServerHandler implements PlayerServerIf
                     //向下开火
                     return 2;
                 }
-
             }
 
             if ($arrElmPos['x'] == $arrMyPos['x'] && abs($arrElmPos['y'] - $arrMyPos['y']) <= 2 * $this->arrArgument['shellSpeed']) {
-
                 if (!$this->CheckWall($arrMyPos, $arrElmPos)) {
                     continue;
                 }
@@ -590,8 +737,8 @@ class PlayerServerHandler implements PlayerServerIf
                     return 4;
                 }
             }
-            return 0;
         }
+        return 0;
     }
 
 
@@ -607,14 +754,13 @@ class PlayerServerHandler implements PlayerServerIf
                 $indexEnd = $arrElmPos['x'];
             }
 
-            foreach ($this->arrTankStates as $arrMyTank) {
+            foreach ($this->arrTankStatesCopy as $arrMyTank) {
                 if ($arrMyTank['pos']['y'] == $arrElmPos['y'] && $arrMyTank['pos']['x'] > $indexStart && $arrMyTank['pos']['x'] < $indexEnd) {
                     return false;
                 }
             }
 
             for ($i = $indexStart; $i < $indexEnd; $i++) {
-
                 if (1 == $this->AStarMap[$i][$arrElmPos['y']]) {
                     return false;
                 }
@@ -630,7 +776,7 @@ class PlayerServerHandler implements PlayerServerIf
                 $indexEnd = $arrElmPos['y'];
             }
 
-            foreach ($this->arrTankStates as $arrMyTank) {
+            foreach ($this->arrTankStatesCopy as $arrMyTank) {
                 if ($arrMyTank['pos']['x'] == $arrElmPos['x'] && $arrMyTank['pos']['y'] > $indexStart && $arrMyTank['pos']['y'] < $indexEnd) {
                     return false;
                 }
@@ -645,27 +791,28 @@ class PlayerServerHandler implements PlayerServerIf
         return true;
     }
 
-    private  function  getFristWall($arrMyPos,$shellDir) {
+
+    private function getFristWall($arrMyPos, $shellDir)
+    {
         $resPos = array();
-        if(2 == $shellDir || 1  == $shellDir) {
-            foreach($this->AStarMap as $key => $Map) {
-                if($key <= $arrMyPos['x'] && 2 == $shellDir) {
+        if (2 == $shellDir || 1 == $shellDir) {
+            foreach ($this->AStarMap as $key => $Map) {
+                if ($key <= $arrMyPos['x'] && 2 == $shellDir) {
                     //还没有到射击弹道
                     continue;
                 }
-
-
-                if(2 == $shellDir && 1 == $Map[$arrMyPos['y']]) {
+                if (2 == $shellDir && 1 == $Map[$arrMyPos['y']]) {
                     $resPos['x'] = $key;
                     $resPos['y'] = $arrMyPos['y'];
                     break;
                 }
 
-                if(1 == $shellDir) {
-                    if($key >= $arrMyPos['x']) {
+                if (1 == $shellDir) {
+                    if ($key >= $arrMyPos['x']) {
                         break;
                     }
-                    if(1 == $Map[$arrMyPos['y']]) {
+                    if (1 == $Map[$arrMyPos['y']]) {
+                        //排除墙的干扰
                         $resPos['x'] = $key + 1;
                         $resPos['y'] = $arrMyPos['y'];
                     }
@@ -674,20 +821,23 @@ class PlayerServerHandler implements PlayerServerIf
             }
         }
 
-
-        if(3 == $shellDir || 4  == $shellDir) {
+        if (3 == $shellDir || 4 == $shellDir) {
             $Map = $this->AStarMap[$arrMyPos['x']];
-            for($i = $arrMyPos['y']; $i >= 0 && $i <= count($Map);) {
-                if(1 == $Map[$i]) {
-                    $resPos['x'] =  $arrMyPos['x'];
-                    $resPos['y'] =  $i;
+            for ($i = $arrMyPos['y']; $i >= 0 && $i <= count($Map);) {
+                if (1 == $Map[$i]) {
+                    $resPos['x'] = $arrMyPos['x'];
+                    $resPos['y'] = $i;
                     break;
                 }
-                if(3 == $shellDir) {
-                    $i --;
-                }else if(4  == $shellDir){
-                    $i ++;
+                if (3 == $shellDir) {
+                    $i--;
+                } else if (4 == $shellDir) {
+                    $i++;
                 }
+            }
+            if (3 == $shellDir) {
+                //排除墙的干扰
+                $resPos['y'] + 1;
             }
         }
         return $resPos;
